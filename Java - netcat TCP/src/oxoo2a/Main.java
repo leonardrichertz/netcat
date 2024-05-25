@@ -7,87 +7,127 @@ import java.io.PrintWriter;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.HashMap;
+import java.util.Map;
 
 public class Main {
 
-    private static void fatal ( String comment ) {
+    private static void fatal(String comment) {
         System.out.println(comment);
         System.exit(-1);
     }
 
-    // ************************************************************************
-    // MAIN
-    // ************************************************************************
+    private static class ClientInfo {
+        String name;
+        Socket socket;
+        PrintWriter writer;
+
+        ClientInfo(String name, Socket socket, PrintWriter writer) {
+            this.name = name;
+            this.socket = socket;
+            this.writer = writer;
+        }
+    }
+
+    private static Map<String, ClientInfo> clients = new HashMap<>();
+
     public static void main(String[] args) throws IOException {
         if (args.length != 2)
             fatal("Usage: \"<netcat> -l <port>\" or \"netcat <ip> <port>\"");
         int port = Integer.parseInt(args[1]);
         if (args[0].equalsIgnoreCase("-l"))
-            Server(port);
+            server(port);
         else
-            Client(args[0],port);
+            client(args[0], port);
     }
 
-    // ************************************************************************
-    // Server
-    // ************************************************************************
-    private static void Server ( int port ) throws IOException {
-        ServerSocket s = new ServerSocket(port);
+    private static void server(int port) throws IOException {
+        ServerSocket serverSocket = new ServerSocket(port);
+        System.out.println("Server listening on port " + port);
+
         while (true) {
-            Socket client = s.accept();
-            Thread t = new Thread(() -> serveClient(client));
-            t.start();
+            Socket clientSocket = serverSocket.accept();
+            Thread clientHandler = new Thread(() -> handleClient(clientSocket));
+            clientHandler.start();
         }
     }
 
-    private static void serveClient ( Socket clientConnection ) {
+    private static void handleClient(Socket clientSocket) {
         try {
-            BufferedReader r = new BufferedReader(new InputStreamReader(clientConnection.getInputStream()));
+            BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+            PrintWriter writer = new PrintWriter(clientSocket.getOutputStream(), true);
             String line;
-            do {
-                line = r.readLine();
-                System.out.println(line);
-            } while (!line.equalsIgnoreCase("stop"));
-            clientConnection.close();
-        }
-        catch (IOException e) {
-            System.out.println("There was an IOException while receiving data ...");
-            System.exit(-1);
+            String clientName = null;
+
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith("register")) {
+                    String[] parts = line.split(" ");
+                    clientName = parts[1];
+                    clients.put(clientName, new ClientInfo(clientName, clientSocket, writer));
+                    System.out.println(clientName + " registered.");
+                    writer.println("ack " + clientName);
+                } else if (line.startsWith("send")) {
+                    String[] parts = line.split(" ", 3);
+                    String recipientName = parts[1];
+                    String message = parts[2];
+                    ClientInfo recipient = clients.get(recipientName);
+                    if (recipient != null) {
+                        recipient.writer.println(clientName + ": " + message);
+                        System.out.println("Message from " + clientName + " to " + recipientName + ": " + message);
+                    } else {
+                        writer.println("Recipient " + recipientName + " not found.");
+                    }
+                } else if (line.equalsIgnoreCase("stop")) {
+                    break;
+                }
+            }
+
+            if (clientName != null) {
+                clients.remove(clientName);
+                System.out.println(clientName + " disconnected.");
+            }
+            clientSocket.close();
+        } catch (IOException e) {
+            e.printStackTrace();
         }
     }
 
-    // ************************************************************************
-    // Client
-    // ************************************************************************
-    private static void Client ( String serverHost, int serverPort ) throws IOException {
+    private static void client(String serverHost, int serverPort) throws IOException {
         InetAddress serverAddress = InetAddress.getByName(serverHost);
-        Socket serverConnect = new Socket(serverAddress,serverPort);
-        PrintWriter w = new PrintWriter(serverConnect.getOutputStream(),true);
-        String line;
-        do {
-            line = readString();
-            w.println(line);
-        } while (!line.equalsIgnoreCase("stop"));
-        serverConnect.close();
-    }
+        Socket serverSocket = new Socket(serverAddress, serverPort);
+        PrintWriter writer = new PrintWriter(serverSocket.getOutputStream(), true);
+        BufferedReader reader = new BufferedReader(new InputStreamReader(serverSocket.getInputStream()));
+        BufferedReader consoleReader = new BufferedReader(new InputStreamReader(System.in));
 
-    private static String readString () {
-        boolean again = false;
-        String input = null;
-        do {
-            // System.out.print("Input: ");
+        System.out.println("Enter your name for registration:");
+        String name = consoleReader.readLine();
+        writer.println("register " + name);
+
+        String ack = reader.readLine();
+        System.out.println("Server: " + ack);
+
+        Thread listenerThread = new Thread(() -> {
             try {
-                if (br == null)
-                    br = new BufferedReader(new InputStreamReader(System.in));
-                input = br.readLine();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println(line);
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
             }
-            catch (Exception e) {
-                System.out.printf("Exception: %s\n",e.getMessage());
-                again = true;
-            }
-        } while (again);
-        return input;
-    }
+        });
+        listenerThread.start();
 
-    private static BufferedReader br = null;
+        String line;
+        while (true) {
+            line = consoleReader.readLine();
+            if (line.equalsIgnoreCase("stop")) {
+                writer.println("stop");
+                break;
+            }
+            writer.println(line);
+        }
+
+        serverSocket.close();
+    }
 }
